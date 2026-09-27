@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driver Emotion Pipeline</title>
+<meta name="description" content="A technical walkthrough of both emotion-recognition models — architecture, training, evaluation, real-time inference, and the KMU-FED in-car fine-tuning results.">
+<style>
+  :root {
+    --bg: #F6F5FB;
+    --surface: #FFFFFF;
+    --surface-2: #FBFAFE;
+    --ink: #1C1830;
+    --ink-muted: #6C6584;
+    --accent: #6D28D9;
+    --accent-soft: #EDE9FE;
+    --line: #E3E0F0;
+    --good: #15803D;
+    --good-soft: #DCFCE7;
+    --warn: #B45309;
+    --warn-soft: #FEF3C7;
+    --bad: #B91C1C;
+    --bad-soft: #FEE2E2;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14121F;
+      --surface: #1C1830;
+      --surface-2: #211C34;
+      --ink: #EDEAFB;
+      --ink-muted: #A79FC4;
+      --accent: #A78BFA;
+      --accent-soft: #2A2140;
+      --line: #332B4D;
+      --good: #4ADE80;
+      --good-soft: #14311F;
+      --warn: #FBBF24;
+      --warn-soft: #332405;
+      --bad: #F87171;
+      --bad-soft: #350E0E;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14121F;
+    --surface: #1C1830;
+    --surface-2: #211C34;
+    --ink: #EDEAFB;
+    --ink-muted: #A79FC4;
+    --accent: #A78BFA;
+    --accent-soft: #2A2140;
+    --line: #332B4D;
+    --good: #4ADE80;
+    --good-soft: #14311F;
+    --warn: #FBBF24;
+    --warn-soft: #332405;
+    --bad: #F87171;
+    --bad-soft: #350E0E;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    padding-inline: 16px;
+    padding-block: 32px;
+  }
+  h1, h2, h3 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600;
+    text-wrap: balance;
+    line-height: 1.2;
+    color: var(--ink);
+  }
+  h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: clamp(1.4rem, 3.2vw, 1.8rem); margin: 0 0 0.6em; }
+  h3 { font-size: 1.1rem; margin: 1.6em 0 0.5em; }
+  p { margin: 0 0 1em; color: var(--ink); }
+  a { color: var(--accent); }
+  img { max-width: 100%; }
+  code, .mono, .tabular {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  code {
+    background: var(--accent-soft);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+
+  .shell { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 230px minmax(0,1fr); gap: 48px; }
+  @media (max-width: 860px) { .shell { grid-template-columns: 1fr; gap: 20px; } }
+
+  nav.toc {
+    position: sticky; top: 24px; align-self: start;
+    font-size: 0.86rem;
+  }
+  nav.toc .label { color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; margin-bottom: 10px; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); }
+  nav.toc a {
+    display: block; padding: 6px 0 6px 14px; text-decoration: none; color: var(--ink-muted);
+    border-left: 2px solid transparent; margin-left: -2px;
+  }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+  @media (max-width: 860px) {
+    nav.toc { position: static; }
+    nav.toc ol { flex-direction: row; overflow-x: auto; border-left: none; border-bottom: 2px solid var(--line); padding-bottom: 8px; gap: 4px; }
+    nav.toc a { padding: 6px 12px; border-left: none; border-bottom: 2px solid transparent; white-space: nowrap; margin-left: 0; }
+    nav.toc a:hover { border-left-color: transparent; border-bottom-color: var(--accent); }
+  }
+
+  main { max-width: 720px; }
+  header.hero { max-width: 720px; margin-bottom: 20px; }
+  header.hero .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--accent); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 14px; font-weight: 600;
+  }
+  header.hero .kicker::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  header.hero p.dek { font-size: 1.15rem; color: var(--ink-muted); max-width: 640px; }
+
+  section { margin: 56px 0; scroll-margin-top: 24px; }
+  section.intro { margin-top: 0; }
+
+  .eyebrow {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-muted);
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px;
+  }
+  .eyebrow .num { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-weight: 600; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px;
+  }
+  .card + .card { margin-top: 14px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.num, th.num { text-align: right; font-family: "IBM Plex Mono", monospace; }
+  .table-wrap { overflow-x: auto; border-radius: 10px; }
+  tr.highlight td { font-weight: 600; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .pill.good { background: var(--good-soft); color: var(--good); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0;
+    padding: 14px 18px; margin: 16px 0; font-size: 0.95rem;
+  }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout strong { color: var(--ink); }
+
+  /* --- flow / pipeline diagrams (plain CSS boxes, no external lib) --- */
+  .flow {
+    display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; margin: 20px 0;
+  }
+  .flow.vertical { flex-direction: column; align-items: stretch; }
+  .flow-step {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; flex: 1 1 120px; min-width: 120px; font-size: 0.85rem;
+  }
+  .flow-step .t { font-weight: 600; margin-bottom: 3px; }
+  .flow-step .d { color: var(--ink-muted); font-size: 0.8rem; }
+  .flow-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 1.1rem; flex: 0 0 auto; padding: 0 2px; }
+  @media (max-width: 640px) {
+    .flow:not(.vertical) { flex-direction: column; }
+    .flow:not(.vertical) .flow-arrow { transform: rotate(90deg); }
+  }
+
+  .arch-col { flex: 1; min-width: 240px; }
+  .arch-col h4 { margin: 0 0 4px; font-size: 1rem; font-family: "IBM Plex Sans"; font-weight: 700; }
+  .arch-col .meta { color: var(--ink-muted); font-size: 0.82rem; margin-bottom: 12px; }
+  .arch-block { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 0.83rem; margin-bottom: 6px; }
+  .arch-block .n { font-weight: 600; }
+  .arch-block .s { color: var(--ink-muted); }
+  .arch-repeat { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px; margin-bottom: 6px; }
+  .arch-repeat .tag { font-size: 0.7rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; margin-bottom: 6px; }
+
+  /* --- simple to-scale bar comparisons --- */
+  .bars { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+  .bar-row { display: grid; grid-template-columns: 100px 1fr 56px; align-items: center; gap: 10px; font-size: 0.85rem; }
+  .bar-row .label { color: var(--ink-muted); }
+  .bar-track { background: var(--surface-2); border-radius: 6px; height: 20px; overflow: hidden; border: 1px solid var(--line); }
+  .bar-fill { height: 100%; border-radius: 6px 0 0 6px; }
+  .bar-fill.cnn { background: var(--accent); }
+  .bar-fill.vgg { background: #F97316; }
+  .bar-row .val { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; }
+  .legend { display: flex; gap: 18px; font-size: 0.8rem; color: var(--ink-muted); margin-bottom: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .swatch.cnn { background: var(--accent); }
+  .swatch.vgg { background: #F97316; }
+
+  hr.sep { border: none; border-top: 1px solid var(--line); margin: 40px 0; }
+
+  footer { max-width: 720px; color: var(--ink-muted); font-size: 0.85rem; margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--line); }
+  footer code { font-size: 0.82em; }
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="shell">
+  <nav class="toc">
+    <div class="label">On this page</div>
+    <ol>
+      <li><a href="#overview">01 · Overview</a></li>
+      <li><a href="#build">02 · How it was built</a></li>
+      <li><a href="#data">03 · The data</a></li>
+      <li><a href="#arch-cnn">04 · Custom CNN</a></li>
+      <li><a href="#arch-vgg">05 · VGG16 transfer</a></li>
+      <li><a href="#training">06 · Training</a></li>
+      <li><a href="#results">07 · Results</a></li>
+      <li><a href="#realtime">08 · Real-time inference</a></li>
+      <li><a href="#kmufed">09 · In-car fine-tuning</a></li>
+      <li><a href="#app">10 · The demo app</a></li>
+      <li><a href="#limits">11 · Limitations</a></li>
+      <li><a href="#refs">12 · Where to look next</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <div class="kicker">Driver Emotion Recognition — technical walkthrough</div>
+      <h1>How the model actually works</h1>
+      <p class="dek">
+        An onboarding note on the two emotion-recognition models in this project: how they're
+        built, how they were trained and evaluated, how a camera frame turns into a live
+        prediction, and what changed when we fine-tuned them on a real in-cabin dataset.
+        Every number below comes straight from <code>results/</code> and
+        <code>docs/experiment_log.md</code> — nothing here is estimated.
+      </p>
+    </header>
+
+    <section id="overview" class="intro">
+      <div class="eyebrow"><span class="num">01</span> Overview</div>
+      <h2>Two models, one comparison</h2>
+      <p>
+        The project trains and compares two architectures on the same task — classifying a
+        face into one of several emotions — so their trade-offs (accuracy, size, speed) can be
+        measured directly rather than assumed:
+      </p>
+      <div class="grid-2">
+        <div class="card">
+          <span class="pill good">Model A</span>
+          <h3 style="margin-top:10px">Custom CNN</h3>
+          <p style="margin-bottom:0">A from-scratch convolutional network, built specifically
+          for this task. Small, fast, grayscale input.</p>
+        </div>
+        <div class="card">
+          <span class="pill warn">Model B</span>
+          <h3 style="margin-top:10px">VGG16 transfer learning</h3>
+          <p style="margin-bottom:0">ImageNet-pretrained VGG16, adapted with a new head and
+          partial fine-tuning. Larger, slower, color input.</p>
+        </div>
+      </div>
+      <p>The end-to-end pipeline looks like this:</p>
+      <div class="flow">
+        <div class="flow-step"><div class="t">FER2013 data</div><div class="d">28,709 train / 7,178 test face photos</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="t">Train both models</div><div class="d">shared augmentation, class weights</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="t">Evaluate + stress-test</div><div class="d">accuracy, significance, simulated driving conditions</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="t">Real-time / app</div><div class="d">webcam or browser inference</div></div>
+      </div>
+      <p>
+        Everything up to here uses <strong>FER2013</strong>, a dataset of web photos, not
+        driving footage — that gap is exactly what the in-car fine-tuning work in
+        <a href="#kmufed">Section 09</a> exists to measure and close.
+      </p>
+    </section>
+
+    <section id="build">
+      <div class="eyebrow"><span class="num">02</span> How it was built</div>
+      <h2>The stack underneath the models</h2>
+      <p>
+        Nothing here is exotic — the project leans on a standard, well-documented Python
+        data-science stack, each tool doing the job it's meant for:
+      </p>
+      <div class="grid-2">
+        <div class="card">
+          <h3 style="margin-top:0">Model building &amp; training</h3>
+          <p style="margin-bottom:0"><code>TensorFlow</code> / <code>Keras</code>'s Functional
+          API defines both architectures layer by layer (Sections 04–05); training runs
+          through Keras' own <code>model.fit()</code>, with <code>EarlyStopping</code>,
+          <code>ReduceLROnPlateau</code>, <code>ModelCheckpoint</code> and
+          <code>CSVLogger</code> handling the bookkeeping every run needs.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">Computer vision</h3>
+          <p style="margin-bottom:0"><code>OpenCV</code> handles image/video I/O, color
+          conversion and resizing throughout; <code>MediaPipe</code>'s BlazeFace model does
+          face detection, with OpenCV's own Haar cascade as an automatic fallback if MediaPipe
+          isn't available.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">Data &amp; metrics</h3>
+          <p style="margin-bottom:0"><code>NumPy</code> and <code>pandas</code> for arrays and
+          tabular results; <code>scikit-learn</code> for classification reports, confusion
+          matrices, and the bootstrap/McNemar significance tests in Section 07;
+          <code>Matplotlib</code>/<code>Seaborn</code> for every chart and curve.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">The demo app</h3>
+          <p style="margin-bottom:0"><code>Streamlit</code> renders the browser app end to
+          end; <code>streamlit-webrtc</code> streams live webcam video into it for the
+          real-time tab.</p>
+        </div>
+      </div>
+
+      <h3>Engineering habits that made this reproducible</h3>
+      <ul>
+        <li>One <code>config.py</code> holds every path and hyperparameter — nothing is
+        hard-coded inside a script, so a run's exact settings are always visible in one
+        place.</li>
+        <li>Every script is a small <code>argparse</code> command with its own
+        <code>main()</code>, runnable on its own (<code>python -m src.train …</code>) rather
+        than through a notebook that has to be stepped through cell by cell in order.</li>
+        <li>A fixed random seed (<code>42</code>) is set at the start of every script, so a
+        training or evaluation run can be repeated and compared honestly.</li>
+        <li>A <code>pytest</code> suite covers the data pipeline, model surgery, and every
+        helper function the app depends on — including regression tests locked in after
+        specific bugs were found and fixed.</li>
+        <li>Actual training happened on free Kaggle GPU sessions (a T4); a laptop CPU was only
+        ever used for quick, small-scale smoke tests before spending GPU time on a full
+        run.</li>
+        <li>Every run, decision and bug is written down as it happened in
+        <code>docs/experiment_log.md</code> — including the ones that didn't work (Section
+        09's class-weighting attempt, for one) — so a result can always be traced back to
+        exactly what produced it.</li>
+      </ul>
+    </section>
+
+    <section id="data">
+      <div class="eyebrow"><span class="num">03</span> Data</div>
+      <h2>FER2013: 7 emotions, 48×48 grayscale</h2>
+      <p>
+        Both models are trained on <a href="https://www.kaggle.com/datasets/msambare/fer2013">FER2013</a>:
+        28,709 training images and 7,178 test images, each a 48×48 grayscale face, labelled
+        into one of <strong>angry, disgust, fear, happy, neutral, sad, surprise</strong>.
+        The test set is never touched during training or model selection.
+      </p>
+      <div class="callout warn">
+        <p><strong>The dataset is heavily imbalanced.</strong> <em>Disgust</em> has only 436
+        training images and 111 test images, versus 7,215 and 1,774 for <em>happy</em> — about
+        16.5× fewer. Left alone, a model will mostly ignore disgust because getting it wrong
+        costs almost nothing to the average loss.</p>
+      </div>
+      <p>
+        The fix is <strong>class weighting</strong>, not resampling: each class's loss
+        contribution is scaled up in inverse proportion to how rare it is. A first attempt used
+        scikit-learn's standard "balanced" weights — disgust ended up weighted ~9.5×, which blew
+        up gradients whenever a disgust image appeared in a batch and stalled training entirely
+        at chance-level accuracy (~14%). The fix that shipped square-roots the balanced weights
+        and caps them at <code>3.0</code> (<code>config.py</code>'s <code>CLASS_WEIGHT_MODE
+        = "sqrt"</code>), which keeps the correction without destabilising training.
+      </p>
+      <p>
+        Light augmentation is applied to the training split only: horizontal flip, ±0.05
+        rotation, 0.1 zoom, and ±0.2 brightness/contrast jitter — enough to reduce overfitting
+        without distorting what a face actually looks like.
+      </p>
+    </section>
+
+    <section id="arch-cnn">
+      <div class="eyebrow"><span class="num">04</span> Architecture A</div>
+      <h2>Custom CNN — 4.8M parameters</h2>
+      <p>
+        A from-scratch network built from VGG-style blocks, sized for 48×48 grayscale input.
+        Each block is two 3×3 convolutions (with L2 weight regularisation) followed by batch
+        normalisation, ReLU, a 2×2 max-pool, and dropout — repeated four times with growing
+        filter counts, then a lightweight classification head:
+      </p>
+      <div class="arch-col" style="max-width:460px">
+        <div class="arch-block"><span class="n">Input</span> <span class="s">— 48×48×1 grayscale</span></div>
+        <div class="arch-repeat">
+          <div class="tag">× 4 blocks — filters: 64, 128, 256, 512</div>
+          <div class="arch-block" style="margin-bottom:4px"><span class="n">Conv 3×3 → Conv 3×3</span> <span class="s">— BatchNorm + ReLU after each</span></div>
+          <div class="arch-block" style="margin-bottom:0"><span class="n">MaxPool 2×2 → Dropout 0.25</span></div>
+        </div>
+        <div class="arch-block"><span class="n">GlobalAveragePooling2D</span></div>
+        <div class="arch-block"><span class="n">Dense 256 → BatchNorm → ReLU → Dropout 0.4</span></div>
+        <div class="arch-block"><span class="n">Dense 7 → Softmax</span> <span class="s">— one score per emotion</span></div>
+      </div>
+      <p>
+        Trained for 60 epochs (batch 64, Adam at <code>lr=1e-3</code>) on a Kaggle T4 GPU in
+        21.5 minutes, checkpointing on best validation accuracy: <strong>66.65%</strong> at
+        epoch 59, val macro-F1 <strong>0.643</strong>. <code>ReduceLROnPlateau</code> fired six
+        times as training plateaued; <code>EarlyStopping</code> (patience 10) never had to cut
+        the run short.
+      </p>
+    </section>
+
+    <section id="arch-vgg">
+      <div class="eyebrow"><span class="num">05</span> Architecture B</div>
+      <h2>VGG16 transfer learning — 15.0M parameters</h2>
+      <p>
+        Keras' <code>VGG16</code>, pretrained on ImageNet, with its classifier head replaced.
+        Grayscale input is converted to 3-channel and resized to 224×224 (VGG16's native
+        resolution) before the shared preprocessing step:
+      </p>
+      <div class="arch-col" style="max-width:460px">
+        <div class="arch-block"><span class="n">Input</span> <span class="s">— 224×224×3, ImageNet-normalised</span></div>
+        <div class="arch-block"><span class="n">VGG16 conv base</span> <span class="s">— 5 blocks, ImageNet weights</span></div>
+        <div class="arch-block"><span class="n">GlobalAveragePooling2D</span></div>
+        <div class="arch-block"><span class="n">Dense 512 (ReLU) → Dropout 0.5</span></div>
+        <div class="arch-block"><span class="n">Dense 7 → Softmax</span></div>
+      </div>
+      <p>Training happens in two stages, because randomly-initialised head weights would
+      otherwise send garbage gradients straight into the pretrained base:</p>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="t">Stage 1 — frozen base</div>
+          <div class="d">Only the new head trains. 15 epochs, <code>lr=1e-3</code>. Plateaus around 50% val accuracy — ImageNet features alone transfer poorly to 48px grayscale faces.</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="t">Stage 2 — unfreeze <code>block5</code></div>
+          <div class="d">The last conv block becomes trainable too (BatchNorm layers stay frozen — see <code>unfreeze_top()</code>). 25 epochs, <code>lr=1e-5</code>. This is the jump to ~66%.</div>
+        </div>
+      </div>
+      <p>
+        Best validation accuracy <strong>66.00%</strong> at epoch 38 of 40, val macro-F1
+        <strong>0.633</strong>, after 123.4 minutes on a Kaggle T4 — almost identical accuracy
+        to the much smaller custom CNN despite 3× the parameters and 2× the file size.
+      </p>
+    </section>
+
+    <section id="training">
+      <div class="eyebrow"><span class="num">06</span> Training</div>
+      <h2>What both runs share</h2>
+      <p>
+        <code>src/train.py</code> is one shared CLI for both architectures, so the only real
+        differences between the two runs are the ones described above. Everything else is
+        identical:
+      </p>
+      <table>
+        <tr><th>Shared setting</th><th>Value</th></tr>
+        <tr><td>Random seed</td><td class="num">42 (<code>set_seed</code>, every script)</td></tr>
+        <tr><td>Train / val split</td><td class="num">85 / 15, carved from FER2013's train set</td></tr>
+        <tr><td>Test set</td><td class="num">FER2013's own 7,178-image test set — never split from, never trained on</td></tr>
+        <tr><td>Checkpoint selection</td><td class="num">best <code>val_accuracy</code>, not the last epoch</td></tr>
+        <tr><td>Early stopping</td><td class="num">patience 10 on <code>val_accuracy</code></td></tr>
+        <tr><td>LR schedule</td><td class="num"><code>ReduceLROnPlateau</code>, ×0.5, patience 4</td></tr>
+      </table>
+      <p>
+        Pixel preprocessing is centralised in <code>src/preprocess.py</code> and imported by
+        <em>both</em> training (<code>src/data.py</code>) and live inference
+        (<code>src/realtime.py</code>, <code>app_collect.py</code>) — one function per model,
+        called from both places, so a live camera frame is guaranteed to be scaled exactly the
+        way a training image was. The custom CNN divides pixels by 255; VGG16 converts to RGB
+        and applies Keras' own <code>vgg16.preprocess_input</code>.
+      </p>
+    </section>
+
+    <section id="results">
+      <div class="eyebrow"><span class="num">07</span> Results</div>
+      <h2>FER2013 test set — the real, held-out numbers</h2>
+      <div class="table-wrap">
+        <table>
+          <tr><th></th><th class="num">Custom CNN</th><th class="num">VGG16</th></tr>
+          <tr class="highlight"><td>Test accuracy</td><td class="num">67.53%</td><td class="num">65.81%</td></tr>
+          <tr><td>Macro-F1</td><td class="num">0.6595</td><td class="num">0.6397</td></tr>
+          <tr><td>Parameters</td><td class="num">4.83M</td><td class="num">14.98M</td></tr>
+          <tr><td>File size</td><td class="num">55.4 MiB</td><td class="num">113.3 MiB</td></tr>
+          <tr><td>Latency (laptop CPU)</td><td class="num">39.9 ms · 25.1 FPS</td><td class="num">216.2 ms · 4.6 FPS</td></tr>
+        </table>
+      </div>
+
+      <h3>Per-class F1</h3>
+      <div class="legend"><span><i class="swatch cnn"></i>Custom CNN</span><span><i class="swatch vgg"></i>VGG16</span></div>
+      <div class="bars">
+        <div class="bar-row"><span class="label">happy</span><div class="bar-track"><div class="bar-fill cnn" style="width:87.7%"></div></div><span class="val">0.877</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:85.6%"></div></div><span class="val">0.856</span></div>
+        <div class="bar-row"><span class="label">surprise</span><div class="bar-track"><div class="bar-fill cnn" style="width:78.9%"></div></div><span class="val">0.789</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:77.3%"></div></div><span class="val">0.773</span></div>
+        <div class="bar-row"><span class="label">disgust</span><div class="bar-track"><div class="bar-fill cnn" style="width:66.1%"></div></div><span class="val">0.661</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:67.6%"></div></div><span class="val">0.676</span></div>
+        <div class="bar-row"><span class="label">neutral</span><div class="bar-track"><div class="bar-fill cnn" style="width:63.4%"></div></div><span class="val">0.634</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:62.1%"></div></div><span class="val">0.621</span></div>
+        <div class="bar-row"><span class="label">angry</span><div class="bar-track"><div class="bar-fill cnn" style="width:61.3%"></div></div><span class="val">0.613</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:59.4%"></div></div><span class="val">0.594</span></div>
+        <div class="bar-row"><span class="label">sad</span><div class="bar-track"><div class="bar-fill cnn" style="width:53.4%"></div></div><span class="val">0.534</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:53.7%"></div></div><span class="val">0.537</span></div>
+        <div class="bar-row"><span class="label">fear</span><div class="bar-track"><div class="bar-fill cnn" style="width:50.8%"></div></div><span class="val">0.508</span></div>
+        <div class="bar-row"><span class="label"></span><div class="bar-track"><div class="bar-fill vgg" style="width:42.0%"></div></div><span class="val">0.420</span></div>
+      </div>
+      <p>
+        <strong>Fear</strong> is VGG16's weak point (0.420 vs the CNN's 0.508) — recall drops
+        to 0.331. That matters more than it might look, since <em>fear</em> and <em>angry</em>
+        are the two "alert" emotions the real-time app watches for.
+      </p>
+
+      <h3>Is the gap real?</h3>
+      <p>
+        A 1.7-point accuracy gap on 7,178 images could just be test-set noise. To check,
+        <code>src/significance.py</code> ran a 2,000-resample bootstrap and an exact McNemar
+        test on the two models' agreement/disagreement pattern: the paired accuracy difference
+        is <strong>+1.71 points, 95% CI [0.70, 2.76]</strong> — excludes zero, so the CNN's edge
+        is real, if modest (McNemar exact <em>p</em> = 0.0014). Of 7,178 test images, both
+        models agreed on 5,711 (4,052 right, 1,659 wrong); of the 1,467 where they disagreed,
+        the CNN was right on 795 and VGG16 on 672.
+      </p>
+
+      <h3>Robustness under simulated driving conditions</h3>
+      <p>
+        <code>src/robustness.py</code> re-evaluates both models on the full test set under six
+        synthetic corruptions meant to approximate real driving conditions — not real in-car
+        footage, but a controlled first check:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Condition</th><th class="num">CNN accuracy</th><th class="num">VGG16 accuracy</th></tr>
+          <tr class="highlight"><td>clean</td><td class="num">0.676</td><td class="num">0.655</td></tr>
+          <tr><td>low light</td><td class="num" style="color:var(--bad)">0.286</td><td class="num" style="color:var(--bad)">0.218</td></tr>
+          <tr><td>glare</td><td class="num">0.515</td><td class="num">0.478</td></tr>
+          <tr><td>motion blur</td><td class="num">0.441</td><td class="num" style="color:var(--warn)">0.286</td></tr>
+          <tr><td>occlusion</td><td class="num">0.444</td><td class="num">0.396</td></tr>
+          <tr><td>head rotation ±20°</td><td class="num">0.668</td><td class="num">0.634</td></tr>
+        </table>
+      </div>
+      <div class="callout bad">
+        <p><strong>Low light collapses both models</strong> — the CNN's 28.6% is barely above
+        always guessing "happy" (24.7% of the test set), and VGG16's 21.8% is below that
+        baseline. Neither model is usable in the dark as currently trained. Motion blur is the
+        other standout: VGG16 loses 37 points (65.5% → 28.6%) while the CNN loses only 23.5.
+        Head rotation is nearly harmless for both — unsurprising, since training augmentation
+        already includes rotation.</p>
+      </div>
+    </section>
+
+    <section id="realtime">
+      <div class="eyebrow"><span class="num">08</span> Real-time inference</div>
+      <h2>From camera frame to on-screen prediction</h2>
+      <p>
+        <code>src/realtime.py</code> (a standalone OpenCV window) and <code>app_collect.py</code>'s
+        live tab (browser, via <code>streamlit-webrtc</code>) both call the exact same
+        <code>predict_face()</code> function, so there is only one inference path to reason
+        about, not two:
+      </p>
+      <div class="flow vertical">
+        <div class="flow-step"><div class="t">1 · Detect</div><div class="d">MediaPipe BlazeFace (downloads a small model on first use); falls back to OpenCV's Haar cascade automatically if MediaPipe is unavailable. Confidence threshold 0.6. If several faces are found, the largest box wins.</div></div>
+        <div class="flow-step"><div class="t">2 · Crop + pad</div><div class="d">Crop the chosen box, expanded 15% on every side, clamped to the frame edges.</div></div>
+        <div class="flow-step"><div class="t">3 · Grayscale + resize</div><div class="d">Convert to grayscale, resize to the model's expected input — 48px for the CNN, 224px for VGG16.</div></div>
+        <div class="flow-step"><div class="t">4 · Preprocess</div><div class="d">The same per-model function used in training (Section 06) — never a separate implementation.</div></div>
+        <div class="flow-step"><div class="t">5 · Predict</div><div class="d">One forward pass → 7 (or 6, for a KMU-FED fine-tuned model) class probabilities.</div></div>
+        <div class="flow-step"><div class="t">6 · Smooth</div><div class="d"><code>EmotionTracker</code> averages the last 10 frames' probabilities, so one noisy frame can't flip the displayed emotion.</div></div>
+        <div class="flow-step"><div class="t">7 · Alert</div><div class="d">If the smoothed top class is <em>angry</em> or <em>fear</em> continuously for ≥3.0 seconds, a "stay calm" banner fires.</div></div>
+      </div>
+      <p>
+        By default <strong>no image is ever saved</strong> — only a CSV log (timestamp,
+        predicted emotion, confidence, FPS). A <code>--save-frames</code> flag exists to also
+        write face crops to disk for growing the training set, but it's opt-in, off by default,
+        and each saved filename carries the model's <em>predicted</em> label, not a verified
+        one — see <code>docs/car_deployment_guide.md</code>, Section 8, before turning it on
+        with a real person on camera.
+      </p>
+    </section>
+
+    <section id="kmufed">
+      <div class="eyebrow"><span class="num">09</span> In-car fine-tuning</div>
+      <h2>KMU-FED: closing the web-photo-to-cabin gap</h2>
+      <p>
+        FER2013 is web photos, not a driving cabin. To measure that gap directly — and try to
+        close it — both models were evaluated and then fine-tuned on
+        <a href="https://www.kaggle.com/datasets/anandpanajkar/kmu-fed">KMU-FED</a>: 1,106 real
+        in-cabin photos, 12 subjects, near-infrared/night-vision-style capture, 6 emotions
+        (no <em>neutral</em>).
+      </p>
+      <p>
+        The 12 subjects were split at the <strong>subject level</strong> (8 train / 2 val / 2
+        test) — never split by image — so no face the model sees at test time was ever seen
+        during training, even in a different expression. The split is seeded (42) and
+        constrained: only 7 of 12 subjects have any <em>disgust</em> images at all, so the
+        split is resampled deterministically until both the val and test sets each contain at
+        least one disgust-covered subject. Full reasoning is in
+        <code>docs/experiment_log.md</code>.
+      </p>
+
+      <h3>Step 1 — how bad is the domain gap?</h3>
+      <p>Both FER2013 models, completely unmodified, evaluated on KMU-FED's held-out test subjects (the "neutral" logit is dropped and the remaining 6 renormalised, since KMU-FED has no neutral class):</p>
+      <div class="table-wrap">
+        <table>
+          <tr><th></th><th class="num">FER2013 accuracy</th><th class="num">KMU-FED accuracy</th><th class="num">Drop</th></tr>
+          <tr><td>Custom CNN</td><td class="num">67.5%</td><td class="num" style="color:var(--bad)">25.6%</td><td class="num">−41.9 pts</td></tr>
+          <tr><td>VGG16</td><td class="num">65.8%</td><td class="num" style="color:var(--bad)">36.3%</td><td class="num">−29.6 pts</td></tr>
+        </table>
+      </div>
+      <p>A real, large domain gap — exactly what motivated fine-tuning rather than deploying either model as-is.</p>
+
+      <h3>Step 2 — fine-tuning</h3>
+      <p>
+        For each model: replace the final layer with a fresh 6-unit head, freeze everything
+        except that head and the last convolutional block (<code>unfreeze_top()</code> — the
+        same mechanism VGG16's own stage-2 training used, batch norm kept frozen), and train on
+        the 8 train subjects with heavier augmentation than FER2013's own (rotation up to ~36°,
+        0.2 zoom, ±0.3 brightness/contrast — under 900 images makes overfitting the default
+        outcome, not an edge case).
+      </p>
+      <div class="callout warn">
+        <p><strong>Disgust is scarce here too</strong> — only 60 of 700 training images, versus
+        120–160 for every other class. Three imbalance-handling strategies were tried, in this
+        order, each fully evaluated before moving to the next:</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Strategy</th><th class="num">CNN accuracy</th><th class="num">CNN macro-F1</th><th class="num">VGG16 accuracy</th><th class="num">VGG16 macro-F1</th><th>Disgust (CNN / VGG16)</th></tr>
+          <tr><td>None</td><td class="num">58.1%</td><td class="num">0.519</td><td class="num">75.6%</td><td class="num">0.724</td><td>0/0/0 · 0/0/0</td></tr>
+          <tr><td>Class weights</td><td class="num">63.1%</td><td class="num">~0.55</td><td class="num" style="color:var(--warn)">71.3%</td><td class="num" style="color:var(--warn)">0.625</td><td>0/0/0 · 0/0/0</td></tr>
+          <tr class="highlight"><td>Oversample <span class="pill good" style="margin-left:4px">kept</span></td><td class="num">63.1%</td><td class="num">0.560</td><td class="num">76.9%</td><td class="num">0.725</td><td>.20/.05/.08 · 0/0/0</td></tr>
+        </table>
+      </div>
+      <p>
+        <strong>Oversampling</strong> (duplicating minority-class training images so every
+        class appears equally often per epoch, letting augmentation give each duplicate a
+        different view) is the current default and the best result for both models on
+        accuracy <em>and</em> macro-F1 together. It's also the only strategy that got the CNN
+        to predict disgust correctly at all — once, out of 20 test images.
+      </p>
+      <div class="callout bad">
+        <p><strong>VGG16 still can't learn disgust at all</strong> — 0.0 precision/recall/F1
+        under every strategy tried. The likely reason: oversampling only repeats the same 60
+        real disgust images with different augmented views; it can't manufacture the visual
+        variety that a genuinely larger dataset would. This is a real, current limitation, not
+        a bug to chase further with the same 60 images.
+      </p>
+      </div>
+      <p>
+        Both fine-tuned models — <code>cnn_kmufed_ft_v1.keras</code> and
+        <code>vgg16_kmufed_ft_v1.keras</code> — are evaluated on only 160 test images from 2
+        held-out subjects, and each number above is a single training run. Treat 63–77% as a
+        real but noisy estimate, not a tight bound.
+      </p>
+    </section>
+
+    <section id="app">
+      <div class="eyebrow"><span class="num">10</span> The demo app</div>
+      <h2>app_collect.py — five tabs, four selectable models</h2>
+      <p>
+        A Streamlit dashboard that doubles as a demo and a data-collection tool. All four
+        trained models — the two original FER2013 models and the two KMU-FED fine-tuned ones —
+        are selectable from one dropdown, and the app adapts automatically rather than having
+        per-model special cases scattered through the code:
+      </p>
+      <ul>
+        <li><code>model_class_names()</code> reads a model's output size (7 vs. 6 units) and
+        returns the right class list, so every badge, chart and dropdown lines up correctly
+        whichever model is active.</li>
+        <li><code>model_accuracy_info()</code> looks for that model's own KMU-FED test metrics
+        first, then its FER2013 test-set numbers, then a validation-only fallback — so the
+        sidebar accuracy badge always shows a number that's actually about the selected model,
+        never a hardcoded one from a different model.</li>
+      </ul>
+      <table>
+        <tr><th>Tab</th><th>What it does</th></tr>
+        <tr><td>Image upload</td><td>Run inference on a photo, optionally correct the label, save to <code>data/collected/</code> (consent checkbox required).</td></tr>
+        <tr><td>Video upload</td><td>Same, sampled across a video file.</td></tr>
+        <tr><td>Real-time video</td><td>Live webcam in the browser (<code>streamlit-webrtc</code>) — view only, nothing saved from this tab.</td></tr>
+        <tr><td>Analytics dashboard</td><td>What's been collected so far vs. FER2013's own class balance.</td></tr>
+        <tr><td>About</td><td>Explains whichever model is currently selected, with its real accuracy source.</td></tr>
+      </table>
+      <p>
+        The sidebar also has six "traffic scenario" toggles (Night Driving, Highway/Freeway,
+        etc.) that reapply one of <code>src/robustness.py</code>'s exact corruption functions —
+        the same ones behind the robustness table in Section 07 — so you can preview how
+        accuracy changes under that condition, plus a clearly-labelled, non-validated risk
+        heuristic.
+      </p>
+    </section>
+
+    <section id="limits">
+      <div class="eyebrow"><span class="num">11</span> Limitations</div>
+      <h2>What this is — and isn't — validated for</h2>
+      <div class="callout bad">
+        <ul style="margin:0; padding-left:1.1em">
+          <li><strong>Disgust doesn't work</strong> in the KMU-FED fine-tuned models — 0/0/0 for VGG16 under every strategy tried, and only 1-in-20 correct for the CNN.</li>
+          <li><strong>Low light collapses both original models</strong> to near or below chance level (Section 07).</li>
+          <li>Every trained checkpoint is a <strong>single run</strong> — no seed averaging, so a different seed could move any number here by an unmeasured amount.</li>
+          <li>KMU-FED is <strong>12 people in one stationary room</strong>, not live video from a moving car across changing light — a real step toward in-cabin conditions, not a simulation of driving itself.</li>
+          <li>The one live webcam session run so far used the original <code>cnn_v1</code> on visible light, 42 minutes, one person — not yet repeated with a fine-tuned model or an IR camera.</li>
+        </ul>
+      </div>
+      <p>
+        None of this means the work isn't useful — it means every number above should be read
+        with its sample size and caveats attached, not as a finished product. Full detail on
+        every run, including the ones that didn't help, is in
+        <code>docs/experiment_log.md</code>.
+      </p>
+    </section>
+
+    <section id="refs">
+      <div class="eyebrow"><span class="num">12</span> Where to look next</div>
+      <h2>The rest of the repo</h2>
+      <table>
+        <tr><th>File</th><th>What's in it</th></tr>
+        <tr><td><code>README.md</code></td><td>Setup (macOS/Linux + Windows), every script's CLI, project layout.</td></tr>
+        <tr><td><code>docs/experiment_log.md</code></td><td>Every run, decision and bug, dated — this doc's real source of truth.</td></tr>
+        <tr><td><code>docs/car_deployment_guide.md</code></td><td>Hardware, camera, power, mounting, legal/privacy — taking this from a laptop demo to an actual vehicle.</td></tr>
+        <tr><td><code>notebooks/kmu_fed_step1_step2_kaggle_cell.py</code></td><td>Re-runs Section 09's Step 1 + Step 2 end to end on Kaggle.</td></tr>
+      </table>
+    </section>
+
+    <footer>
+      Prepared from this project's own <code>results/</code>, <code>docs/experiment_log.md</code>
+      and source code — every number above is reproducible by running the referenced script or
+      reading the referenced file. Nothing here has been updated in <code>paper/</code> yet;
+      that happens once the fine-tuned model has been validated on real driver photos or video.
+    </footer>
+  </main>
+</div>
+</body>
+</html>
